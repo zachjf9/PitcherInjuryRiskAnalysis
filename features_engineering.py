@@ -1,5 +1,18 @@
 import pandas as pd
 
+def normalize_name(name):
+    #Match Statcast names to IL names
+    if pd.isna(name):
+        return name
+
+    name = str(name).strip()
+
+    if "," in name:
+        last, first = name.split(",", 1)
+        return f"{first.strip()} {last.strip()}"
+
+    return name
+
 def load_statcast(filepath):
     df = pd.read_csv(filepath)
     df["game_date"] = pd.to_datetime(df["game_date"])
@@ -34,13 +47,17 @@ def create_injury_labels(df, il_df, horizon_games=5):
     df["game_date"] = pd.to_datetime(df["game_date"])
     il_df["injury_date"] = pd.to_datetime(il_df["injury_date"])
 
+    #Normalize names in both datasets
+    df["name_clean"] = df["player_name"].apply(normalize_name)
+    il_df["name_clean"] = il_df["player_name"].apply(normalize_name)
+
     #Loop through every injury record
     for _, injury in il_df.iterrows():
-        pitcher_name = injury["player_name"]
+        pitcher_name = injury["name_clean"]
         injury_date = injury["injury_date"]
 
         pitcher_games = (
-            df[df["player_name"] == pitcher_name]
+            df[df["name_clean"] == pitcher_name]
             .sort_values("game_date"))
 
         pre_injury_games = pitcher_games[
@@ -94,14 +111,16 @@ def pivot_pitcher_game_features(game_pitch):
             "avg_spin_rate",
             "pitch_usage_pct"])
 
-    wide = wide.reset_index()
-    #Flatten multi-level column names
     wide.columns = [
         f"{metric}_{pitch_type}"
         for metric, pitch_type in wide.columns
     ]
     #Restore index columns
     wide = wide.reset_index()
+
+    print("Columns after pivot:")
+    print(wide.columns.tolist())
+
     #Chronologically by pitcher
     wide = wide.sort_values(["pitcher", "game_date"])
 
