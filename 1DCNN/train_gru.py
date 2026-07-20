@@ -1,28 +1,16 @@
+import numpy as np
 import pandas as pd
 import tensorflow as tf
-import numpy as np
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv1D, Flatten, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
-from cnn_dataset import prepare_features, scale_features, create_cnn_sequences
 from sklearn.utils.class_weight import compute_class_weight
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GRU, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from cnn_dataset import (prepare_features, scale_features, create_cnn_sequences)
 
-#Rolling window size
+#Rolling window
 WINDOW = 10
 LABEL_COL = "injury_label"
-
-def calculate_class_weights(y_train):
-    weights = compute_class_weight(
-        class_weight="balanced",
-        classes=np.array([0, 1]),
-        y=y_train)
-
-    class_weight_dict = {
-        0: float(weights[0]),
-        1: float(weights[1])}
-
-    return class_weight_dict
 
 #Load train, validation, and test features
 def load_data():
@@ -30,7 +18,7 @@ def load_data():
     val_df = pd.read_csv("../pitcher_game_features_val.csv")
     test_df = pd.read_csv("../pitcher_game_features_test.csv")
 
-    #Convert dates to datetime objects
+    #Convert game dates from strings to datetime objects
     train_df["game_date"] = pd.to_datetime(train_df["game_date"])
     val_df["game_date"] = pd.to_datetime(val_df["game_date"])
     test_df["game_date"] = pd.to_datetime(test_df["game_date"])
@@ -82,57 +70,67 @@ def prepare_datasets(train_df, val_df, test_df):
         LABEL_COL,
         WINDOW)
 
-    return X_train, y_train, X_val, y_val, X_test, y_test
+    return (X_train, y_train, X_val, y_val, X_test, y_test, scaler, feature_cols)
 
-#Build 1D-CNN
+def calculate_class_weights(y_train, max_positive_weight = 3):
+    weights = compute_class_weight(
+        class_weight="balanced",
+        classes=np.array([0, 1]),
+        y=y_train)
+
+    class_weight_dict = {
+        0: float(weights[0]),
+        1: min(float(weights[1]), max_positive_weight)}
+
+    return class_weight_dict
+
+#Build GRU
 def build_model(input_shape):
     model = Sequential([
-        #Input sequence:(window, features)
         tf.keras.Input(shape=input_shape),
 
-        #Learn local patterns across consecutive games
-        Conv1D(
-            filters=64,
-            kernel_size=2,
-            activation="relu",
-            padding="same"),
+        #First GRU reads the full sequence and returns one hidden-state vector for each game
+        GRU(
+            units=64,
+            return_sequences=True),
         Dropout(0.3),
 
-        #Learn higher-level temporal patterns
-        Conv1D(
-            filters=128,
-            kernel_size=2,
-            activation="relu",
-            padding="same"),
+        #Second GRU summarizes the entire five-game sequence into one output vector
+        GRU(
+            units=32,
+            return_sequences=False),
         Dropout(0.3),
 
-        #Convert feature maps into a single vector
-        Flatten(),
-
-        #Fully connected layer
-        Dense(64, activation="relu"),
+        #Combine the sequence information
+        Dense(
+            units=32,
+            activation="relu"),
         Dropout(0.3),
 
-        #Binary injury prediction
-        Dense(1, activation="sigmoid")])
+        #Produce one probability between 0 and 1
+        Dense(
+            units=1,
+            activation="sigmoid")])
 
-    #Configure optimizer, loss function, and evaluation metrics
     model.compile(
         optimizer="adam",
         loss="binary_crossentropy",
         metrics=[
             "accuracy",
             tf.keras.metrics.AUC(name="auc"),
+            tf.keras.metrics.AUC(
+                name="pr_auc",
+                curve="PR"),
             tf.keras.metrics.Precision(name="precision"),
             tf.keras.metrics.Recall(name="recall")])
 
     return model
 
-#Train CNN using early stopping
+#Train GRU using early stopping
 def train_model(model, X_train, y_train, X_val, y_val, class_weight_dict):
     #Stop training if validation AUC stops improving
     early_stop = EarlyStopping(
-        monitor="val_auc",
+        monitor="val_pr_auc",
         patience=5,
         mode="max",
         restore_best_weights=True)
@@ -152,26 +150,21 @@ def train_model(model, X_train, y_train, X_val, y_val, class_weight_dict):
 #Evaluate performance on test set
 def evaluate_model(model, X_test, y_test, threshold=0.7):
     #Predicted probabilities
-    probabilities = model.predict(
-        X_test,
-        verbose=0).ravel()
+    probabilities = model.predict(X_test, verbose=0).ravel()
 
     #Convert probabilities to binary predictions
-    predictions = (
-            probabilities >= threshold).astype(int)
+    predictions = (probabilities >= threshold).astype(int)
 
     #Calculate metrics
     accuracy = accuracy_score(y_test, predictions)
-    auc = roc_auc_score(y_test, probabilities)
+    auc = roc_auc_score(y_test,probabilities)
     pr_auc = average_precision_score(y_test, probabilities)
     precision = precision_score(y_test, predictions, zero_division=0)
     recall = recall_score(y_test, predictions, zero_division=0)
     f1 = f1_score(y_test, predictions, zero_division=0)
 
     #Confusion matrix
-    cm = confusion_matrix(
-        y_test,
-        predictions)
+    cm = confusion_matrix(y_test, predictions)
 
     tn, fp, fn, tp = cm.ravel()
     print("\nTest Results")
@@ -186,11 +179,11 @@ def evaluate_model(model, X_test, y_test, threshold=0.7):
     print("\nConfusion Matrix")
     print(cm)
     print(f"""
-    True Negatives : {tn}
-    False Positives: {fp}
-    False Negatives: {fn}
-    True Positives : {tp}
-    """)
+True Negatives : {tn}
+False Positives: {fp}
+False Negatives: {fn}
+True Positives : {tp}
+""")
 
     print("Classification Report")
     print(
@@ -210,43 +203,28 @@ def evaluate_model(model, X_test, y_test, threshold=0.7):
         "confusion_matrix": cm}
 
 def main():
+    #Make TensorFlow results more reproducible
+    np.random.seed(42)
+    tf.random.set_seed(42)
+
     #Load feature-engineered datasets
     print("Loading data...")
     train_df, val_df, test_df = load_data()
 
-    #Prepare CNN inputs
-    print("Preparing CNN datasets...")
-    X_train, y_train, X_val, y_val, X_test, y_test = prepare_datasets(
+    #Prepare GRU inputs
+    print("Preparing GRU datasets...")
+    (X_train, y_train, X_val, y_val, X_test, y_test, scaler, feature_cols) = prepare_datasets(
         train_df,
         val_df,
         test_df)
 
-    #Display input dimensions
-    print("X_train shape:", X_train.shape)
-    print("X_val shape:", X_val.shape)
-    print("X_test shape:", X_test.shape)
+    ''''#Display input dimensions
+    print("\nDataset shapes:")
+    print("X_train:", X_train.shape)
+    print("X_val:", X_val.shape)
+    print("X_test:", X_test.shape)'''
 
-    #Display number of positive injury labels
-    print("Positive train labels:", y_train.sum())
-    print("Positive validation labels:", y_val.sum())
-    print("Positive test labels:", y_test.sum())
-
-    # Calculate weights after sequence labels
-    class_weight_dict = calculate_class_weights(y_train)
-
-    print("\nClass weights:")
-    print(class_weight_dict)
-
-    #Build CNN
-    print("Building model...")
-    model = build_model(
-        input_shape=(WINDOW, X_train.shape[2]))
-
-    #Display network architecture
-    model.summary()
-
-    #Show class distribution
-    print("Training labels:")
+    print("\nTraining labels:")
     print(pd.Series(y_train).value_counts())
 
     print("\nValidation labels:")
@@ -255,22 +233,26 @@ def main():
     print("\nTesting labels:")
     print(pd.Series(y_test).value_counts())
 
-    #Train model
-    print("Training model...")
-    train_model(
-        model,
-        X_train,
-        y_train,
-        X_val,
-        y_val,
-        class_weight_dict)
+    #Calculate weights after sequence labels
+    class_weight_dict = calculate_class_weights(y_train, max_positive_weight = 3)
 
-    #Evaluate final performance
-    print("Evaluating model...")
-    evaluate_model(
-        model,
-        X_test,
-        y_test)
+    print("\nClass weights:")
+    print(class_weight_dict)
+
+    #Build GRU
+    print("\nBuilding GRU model...")
+    model = build_model(input_shape=(WINDOW, X_train.shape[2]))
+
+    #Display network architecture
+    model.summary()
+
+    #Train model
+    print("\nTraining GRU model...")
+    train_model(model, X_train, y_train, X_val, y_val, class_weight_dict)
+
+    #Evaluate model
+    print("\nEvaluating GRU model...")
+    evaluate_model(model, X_test, y_test)
 
 if __name__ == "__main__":
     main()
