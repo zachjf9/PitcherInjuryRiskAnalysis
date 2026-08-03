@@ -425,12 +425,13 @@ importance = pd.DataFrame({
 
 print("\nFeature Importance")
 print(importance)
-print("\n")
-
-plt.figure(figsize=(10, 8))
+plt.figure(figsize=(12, 8))
 sns.barplot(x='Importance', y='Feature',
-            data=importance.head(15), legend=False)
-plt.title("Top Feature Importances (Logistic Regression)")
+            data=importance.head(15), palette='viridis')
+plt.title("Top Feature Importances (Logistic Regression)", fontsize=16)
+plt.xlabel("Importance Score", fontsize=12)
+plt.ylabel("Feature", fontsize=12)
+plt.grid(axis='x', linestyle='--', alpha=0.7)
 plt.tight_layout()
 plt.show()
 
@@ -488,17 +489,19 @@ print(f"{roc_auc_score(y_val, rf_probs):.4f}\n")
 print("Confusion Matrix")
 print(confusion_matrix(y_val, rf_preds_at_threshold))
 
-importance = pd.DataFrame(
+mportance = pd.DataFrame(
     {"Feature": X_train.columns, "Importance": model.feature_importances_}
 ).sort_values("Importance", ascending=False)
 
 print("\nTop Feature Importances")
 print(importance.head(15))
-
-plt.figure(figsize=(10, 6))
+plt.figure(figsize=(12, 8))
 sns.barplot(x="Importance", y="Feature", data=importance.head(
-    15), hue="Feature", legend=False)
-plt.title("Top Feature Importances (Random Forest)")
+    15), palette='viridis', hue='Feature', legend=False)
+plt.title("Top Feature Importances (Random Forest)", fontsize=16)
+plt.xlabel("Importance Score", fontsize=12)
+plt.ylabel("Feature", fontsize=12)
+plt.grid(axis='x', linestyle='--', alpha=0.7)
 plt.tight_layout()
 plt.show()
 
@@ -581,9 +584,12 @@ importance = pd.DataFrame({
 
 print("\nTop Feature Importances")
 print(importance.head(15))
-
-plt.figure(figsize=(10, 6))
-plot_importance(xgb_model, max_num_features=15)
-plt.title("Top Feature Importances (XGBoost)")
+plt.figure(figsize=(12, 8))
+sns.barplot(x="Importance", y="Feature", data=importance.head(
+    15), palette='viridis', hue='Feature', legend=False)
+plt.title("Top Feature Importances (XGBoost)", fontsize=16)
+plt.xlabel("Importance Score", fontsize=12)
+plt.ylabel("Feature", fontsize=12)
+plt.grid(axis='x', linestyle='--', alpha=0.7)
 plt.tight_layout()
 plt.show()
