@@ -16,13 +16,13 @@ def generate_dataset(statcast_file):
 
 def main():
     print("Generating training features...")
-    train = generate_dataset("statcast_train.csv")
+    train = generate_dataset("../statcast_train.csv")
 
     print("Generating validation features...")
-    val = generate_dataset("statcast_val.csv")
+    val = generate_dataset("../statcast_val.csv")
 
     print("Generating test features...")
-    test = generate_dataset("statcast_test.csv")
+    test = generate_dataset("../statcast_test.csv")
 
     train.to_csv("pitcher_game_features_train.csv", index = False)
     val.to_csv("pitcher_game_features_val.csv", index = False)

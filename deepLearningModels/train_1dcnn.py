@@ -14,9 +14,9 @@ LABEL_COL = "injury_label"
 
 #Load train, validation, and test features
 def load_data():
-    train_df = pd.read_csv("../pitcher_game_features_train.csv")
-    val_df = pd.read_csv("../pitcher_game_features_val.csv")
-    test_df = pd.read_csv("../pitcher_game_features_test.csv")
+    train_df = pd.read_csv("pitcher_game_features_train.csv")
+    val_df = pd.read_csv("pitcher_game_features_val.csv")
+    test_df = pd.read_csv("pitcher_game_features_test.csv")
 
     #Convert dates to datetime objects
     train_df["game_date"] = pd.to_datetime(train_df["game_date"])
