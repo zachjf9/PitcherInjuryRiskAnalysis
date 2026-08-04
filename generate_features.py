@@ -24,9 +24,9 @@ def main():
     print("Generating test features...")
     test = generate_dataset("statcast_test.csv")
 
-    train.to_csv("pitcher_game_features_train.csv", index=False)
-    val.to_csv("pitcher_game_features_val.csv", index=False)
-    test.to_csv("pitcher_game_features_test.csv", index=False)
+    train.to_csv("pitcher_game_features_train.csv", index = False)
+    val.to_csv("pitcher_game_features_val.csv", index = False)
+    test.to_csv("pitcher_game_features_test.csv", index = False)
 
     print("Files generated successfully")
 
