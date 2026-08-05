@@ -1,0 +1,349 @@
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
+from sklearn.utils.class_weight import compute_class_weight
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import GRU, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+from cnn_dataset import (prepare_features, scale_features, create_sequences)
+
+#Rolling window
+WINDOW = 5
+LABEL_COL = "injury_label"
+
+#Load train, validation, and test features
+def load_data():
+    train_df = pd.read_csv("pitcher_game_features_train.csv")
+    val_df = pd.read_csv("pitcher_game_features_val.csv")
+    test_df = pd.read_csv("pitcher_game_features_test.csv")
+
+    #Convert game dates from strings to datetime objects
+    train_df["game_date"] = pd.to_datetime(train_df["game_date"])
+    val_df["game_date"] = pd.to_datetime(val_df["game_date"])
+    test_df["game_date"] = pd.to_datetime(test_df["game_date"])
+
+    return train_df, val_df, test_df
+
+#Prepare features, scale data, and create CNN sequences
+def prepare_datasets(train_df, val_df, test_df):
+    #Separate predictors and labels
+    train_X, train_y, feature_cols = prepare_features(train_df, LABEL_COL)
+    val_X, val_y, _ = prepare_features(val_df, LABEL_COL)
+    test_X, test_y, _ = prepare_features(test_df, LABEL_COL)
+
+    #Ensure validation and test contain the same feature columns as training
+    val_X = val_X.reindex(columns = feature_cols, fill_value = 0)
+    test_X = test_X.reindex(columns = feature_cols, fill_value = 0)
+
+    #Standardize numerical features
+    train_scaled, val_scaled, test_scaled, scaler = scale_features(train_X, val_X, test_X)
+
+    #Replace original features with scaled values
+    train_scaled_df = train_df.copy()
+    val_scaled_df = val_df.copy()
+    test_scaled_df = test_df.copy()
+
+    train_scaled_df[feature_cols] = train_scaled
+    val_scaled_df[feature_cols] = val_scaled
+    test_scaled_df[feature_cols] = test_scaled
+
+    #Convert game-level data into rolling sequences
+    X_train, y_train = create_sequences(train_scaled_df, feature_cols, LABEL_COL, WINDOW)
+    X_val, y_val = create_sequences(val_scaled_df, feature_cols, LABEL_COL, WINDOW)
+    X_test, y_test = create_sequences(test_scaled_df, feature_cols, LABEL_COL, WINDOW)
+
+    return (X_train, y_train, X_val, y_val, X_test, y_test, scaler, feature_cols)
+
+#Find best class weight that produces highest validation
+def find_best_class_weight(X_train, y_train, X_val, y_val, input_shape, positive_weights = None):
+    #Test weights
+    if positive_weights is None:
+        positive_weights = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+
+    best_weight = None
+    best_val_pr_auc = -1.0
+    best_model = None
+    results = []
+
+    print("\nClass-weight search")
+    print("--------------------------------------------")
+
+    for positive_weight in positive_weights:
+        #Reset seeds, each experiment begins consistently
+        np.random.seed(42)
+        tf.random.set_seed(42)
+
+        #Clear the previous TensorFlow model from memory
+        tf.keras.backend.clear_session()
+
+        class_weight_dict = {0: 1.0, 1: positive_weight}
+
+        print(f"\nTraining with class weights: " f"{class_weight_dict}")
+
+        #Build a new model for this weight
+        model = build_model(
+            input_shape = input_shape)
+
+        #Train the model
+        history = train_model(model, X_train, y_train, X_val, y_val, class_weight_dict)
+
+        #Best validation PR-AUC reached during training
+        val_pr_auc = max(history.history["val_pr_auc"])
+
+        #Best validation ROC-AUC for reference
+        val_auc = max(history.history["val_auc"])
+
+        results.append({
+            "positive_weight": positive_weight,
+            "val_pr_auc": val_pr_auc,
+            "val_auc": val_auc})
+
+        print(f"Best validation PR-AUC: {val_pr_auc:.4f}")
+        print(f"Best validation ROC-AUC: {val_auc:.4f}")
+
+        #Save the strongest model and weight
+        if val_pr_auc > best_val_pr_auc:
+            best_val_pr_auc = val_pr_auc
+            best_weight = positive_weight
+            best_model = model
+
+    print("\nClass-weight results")
+    print("--------------------------------------------")
+
+    results_df = pd.DataFrame(results)
+    print(results_df.to_string(index = False))
+
+    print("\nSelected class weight")
+    print("--------------------------------------------")
+    print(f"Class 0 weight: 1.0")
+    print(f"Class 1 weight: {best_weight}")
+    print(f"Validation PR-AUC: {best_val_pr_auc:.4f}")
+
+    return best_weight, results_df
+
+#Build GRU
+def build_model(input_shape):
+    model = Sequential([
+        tf.keras.Input(shape = input_shape),
+
+        #First GRU reads the full sequence and returns one hidden-state vector for each game
+        GRU(units = 64, return_sequences = False),
+        Dropout(0.3),
+
+        #Combine the sequence information
+        Dense(units = 32, activation = "relu"),
+        Dropout(0.3),
+
+        #Produce one probability between 0 and 1
+        Dense(units = 1, activation = "sigmoid")])
+
+    #Lower learning rate
+    optimizer = tf.keras.optimizers.Adam(learning_rate = 0.0001)
+
+    model.compile(
+        optimizer = optimizer,
+        loss = "binary_crossentropy",
+        metrics = [
+            "accuracy",
+            tf.keras.metrics.AUC(name = "auc"),
+            tf.keras.metrics.AUC(name = "pr_auc", curve = "PR"),
+            tf.keras.metrics.Precision(name = "precision"),
+            tf.keras.metrics.Recall(name = "recall")])
+
+    return model
+
+#Train GRU using early stopping
+def train_model(model, X_train, y_train, X_val, y_val, class_weight_dict):
+    #Stop training if validation AUC stops improving
+    early_stop = EarlyStopping(
+        monitor = "val_pr_auc",
+        patience = 5,
+        mode = "max",
+        restore_best_weights=True)
+
+    history = model.fit(
+        X_train,
+        y_train,
+        validation_data = (X_val, y_val),
+        epochs = 50,
+        batch_size = 32,
+        callbacks = [early_stop],
+        class_weight = class_weight_dict,
+        verbose = 1)
+
+    return history
+
+#Find best threshold
+def find_best_threshold(model, X_val, y_val):
+    #Generate validation probabilities
+    probabilities = model.predict(X_val, verbose = 0).ravel()
+
+    best_threshold = 0.5
+    best_f1 = -1.0
+    best_precision = 0.0
+    best_recall = 0.0
+
+    print("\nValidation threshold results")
+    print("--------------------------------------------")
+
+    #Test thresholds from 0.05 to 0.95
+    for threshold in np.arange(0.05,1.00,0.05):
+        predictions = (probabilities >= threshold).astype(int)
+
+        precision = precision_score(y_val, predictions, zero_division = 0)
+        recall = recall_score(y_val, predictions, zero_division = 0)
+        current_f1 = f1_score(y_val, predictions, zero_division = 0)
+
+        print(
+            f"Threshold: {threshold:.2f} | "
+            f"Precision: {precision:.4f} | "
+            f"Recall: {recall:.4f} | "
+            f"F1: {current_f1:.4f}")
+
+        #Save the threshold with the best validation F1
+        if current_f1 > best_f1:
+            best_f1 = current_f1
+            best_threshold = threshold
+            best_precision = precision
+            best_recall = recall
+
+    print("\nSelected validation threshold")
+    print("--------------------------------------------")
+    print(f"Threshold: {best_threshold:.2f}")
+    print(f"Precision: {best_precision:.4f}")
+    print(f"Recall: {best_recall:.4f}")
+    print(f"F1 Score: {best_f1:.4f}")
+
+    return best_threshold
+
+#Evaluate performance on test set
+def evaluate_model(model, X_test, y_test, threshold):
+    #Predicted probabilities
+    probabilities = model.predict(X_test, verbose = 0).ravel()
+
+    #Convert probabilities to binary predictions
+    predictions = (probabilities >= threshold).astype(int)
+
+    #Calculate metrics
+    accuracy = accuracy_score(y_test, predictions)
+    auc = roc_auc_score(y_test,probabilities)
+    pr_auc = average_precision_score(y_test, probabilities)
+    precision = precision_score(y_test, predictions, zero_division = 0)
+    recall = recall_score(y_test, predictions, zero_division = 0)
+    f1 = f1_score(y_test, predictions, zero_division = 0)
+
+    #Confusion matrix
+    cm = confusion_matrix(y_test, predictions, labels = [0, 1])
+
+    tn, fp, fn, tp = cm.ravel()
+    print("\nTest Results")
+    print("-------------------------")
+    print(f"Threshold: {threshold:.2f}")
+    print(f"Accuracy : {accuracy:.4f}")
+    print(f"ROC AUC  : {auc:.4f}")
+    print(f"PR AUC   : {pr_auc:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall   : {recall:.4f}")
+    print(f"F1 Score : {f1:.4f}")
+
+    print("\nConfusion Matrix")
+    print(cm)
+
+    print("\nConfusion Matrix Breakdown")
+    print("--------------------------------------------")
+    print(f"True Negatives : {tn}")
+    print(f"False Positives: {fp}")
+    print(f"False Negatives: {fn}")
+    print(f"True Positives : {tp}")
+
+    print("Classification Report")
+    print(classification_report(
+            y_test,
+            predictions,
+            labels = [0, 1],
+            target_names = ["No Injury", "Injury"],
+            zero_division = 0))
+
+    return {
+        "threshold": threshold,
+        "accuracy": accuracy,
+        "auc": auc,
+        "pr_auc": pr_auc,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "confusion_matrix": cm}
+
+def main():
+    #Make TensorFlow results more reproducible
+    np.random.seed(42)
+    tf.random.set_seed(42)
+
+    #Load feature-engineered datasets
+    print("Loading data...")
+    train_df, val_df, test_df = load_data()
+    '''
+    #Prepare GRU Sequences
+    print("Preparing GRU datasets...")'''
+    (X_train, y_train, X_val, y_val, X_test, y_test, scaler, feature_cols) = prepare_datasets(train_df, val_df, test_df)
+
+    #Display Sequences dimensions
+    '''print("\nDataset shapes:")
+    print("X_train:", X_train.shape)
+    print("X_val:", X_val.shape)
+    print("X_test:", X_test.shape)'''
+
+    #Display class Distributions
+    '''print("\nTraining labels:")
+    print(pd.Series(y_train).value_counts())
+
+    print("\nValidation labels:")
+    print(pd.Series(y_val).value_counts())
+
+    print("\nTesting labels:")
+    print(pd.Series(y_test).value_counts())'''
+
+    input_shape = (WINDOW, X_train.shape[2])
+
+    #Calculate weights after sequence labels
+    best_positive_weight, weight_results = find_best_class_weight(
+        X_train = X_train,
+        y_train = y_train,
+        X_val = X_val,
+        y_val = y_val,
+        input_shape = input_shape,
+        positive_weights = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0])
+
+    print("\nSelected class weights:")
+    final_class_weight_dict = {
+        0: 1.0,
+        1: best_positive_weight}
+
+    print(final_class_weight_dict)
+
+    #Reset random seeds for final training
+    np.random.seed(42)
+    tf.random.set_seed(42)
+    tf.keras.backend.clear_session()
+
+    #Build GRU
+    print("\nBuilding GRU model...")
+    final_model = build_model(input_shape = input_shape)
+
+    #Display network architecture
+    #final_model.summary()
+
+    #Train model
+    print("\nTraining GRU model...")
+    final_history = train_model(final_model, X_train, y_train, X_val, y_val, final_class_weight_dict)
+
+    #Threshold using validation data
+    best_threshold = find_best_threshold(final_model, X_val, y_val)
+
+    #Evaluate model
+    print("\nEvaluating GRU model...")
+    test_results = evaluate_model(final_model, X_test, y_test, threshold = best_threshold)
+
+if __name__ == "__main__":
+    main()
