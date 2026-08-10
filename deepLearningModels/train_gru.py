@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, average_precision_score
 from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras.models import Sequential
@@ -275,6 +276,77 @@ def evaluate_model(model, X_test, y_test, threshold):
         "f1": f1,
         "confusion_matrix": cm}
 
+def permutation_feature_importance(
+        model,
+        X,
+        y,
+        feature_cols,
+        n_repeats = 5,
+        top_n = 15):
+
+    #Get baseline model predictions
+    baseline_probabilities = model.predict(X, verbose = 0).ravel()
+
+    #Calculate baseline ROC-AUC
+    baseline_auc = roc_auc_score(y, baseline_probabilities)
+
+    print(f"Baseline ROC-AUC: {baseline_auc:.4f}")
+
+    results = []
+
+    rng = np.random.default_rng(42)
+
+    #Test each feature individually
+    for feature_index, feature_name in enumerate(feature_cols):
+
+        auc_drops = []
+
+        for _ in range(n_repeats):
+            #Copy the original sequence data
+            X_permuted = X.copy()
+
+            #Shuffle this feature across samples
+            permutation = rng.permutation(len(X_permuted))
+
+            X_permuted[:, :, feature_index] = (X_permuted[permutation, :, feature_index])
+
+            #Predict using shuffled feature
+            permuted_probabilities = model.predict(X_permuted, verbose = 0).ravel()
+
+            #Calculate ROC-AUC after shuffling
+            permuted_auc = roc_auc_score(y, permuted_probabilities)
+
+            #Importance = loss in ROC-AUC
+            auc_drop = baseline_auc - permuted_auc
+
+            auc_drops.append(auc_drop)
+
+        #Average importance across repeated shuffles
+        results.append({"Feature": feature_name, "Importance": np.mean(auc_drops)})
+
+    importance_df = pd.DataFrame(results)
+
+    #Sort from most important to least important
+    importance_df = (importance_df.sort_values("Importance", ascending = False).reset_index(drop = True))
+
+    #Keep top N
+    top_features = importance_df.head(top_n)
+
+    #Create horizontal bar graph
+    plt.figure(figsize = (10, 7))
+
+    colors = plt.cm.viridis(np.linspace(0, 1, len(top_features)))
+    plt.barh(top_features["Feature"][::-1], top_features["Importance"][::-1], color = colors)
+
+    plt.xlabel("Decrease in ROC-AUC")
+    plt.ylabel("Feature")
+    plt.title("Top Feature Importances (GRU)")
+
+    plt.tight_layout()
+    plt.show()
+
+    return importance_df
+
 def main():
     #Make TensorFlow results more reproducible
     np.random.seed(42)
@@ -344,6 +416,8 @@ def main():
     #Evaluate model
     print("\nEvaluating GRU model...")
     test_results = evaluate_model(final_model, X_test, y_test, threshold = best_threshold)
+
+    importance_df = permutation_feature_importance(final_model, X_test, y_test, feature_cols, n_repeats = 3, top_n = 15)
 
 if __name__ == "__main__":
     main()
