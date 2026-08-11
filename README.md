@@ -1,12 +1,19 @@
 # MLB Pitcher Injury Risk Prediction
 
-This repository contains a machine learning pipeline for predicting elbow/UCL injury risk in Major League Baseball pitchers using Statcast pitch-level data and MLB injury-list records.
+This repository contains a machine learning and deep learning pipeline for predicting elbow/UCL injury risk in Major League Baseball pitchers using Statcast pitch-level data and MLB injury-list records.
 
-The training script downloads Statcast and injury-list data from the repository, engineers appearance-level and rolling workload features, labels appearances occurring within 60 days before an elbow/UCL injury, balances the dataset, and trains three machine learning models:
+The pipeline process Statcast and injury-list data, engineers appearance-level and rolling workload features, and labels appearances occurring within 60 days preceding an elbow/UCL injury, 
+
+Three machine learning models are trained and evaluated:
 
 * Logistic Regression
 * Random Forest
 * XGBoost
+
+Two deep learning models are also trained using sequential game-level data:
+
+* 1D-CNN
+* GRU
 
 Each model is evaluated using multiple performance metrics and feature importance analysis to compare its ability to identify pitchers at elevated injury risk.
 
