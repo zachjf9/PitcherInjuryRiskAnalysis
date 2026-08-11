@@ -115,8 +115,8 @@ The pipeline performs the following steps:
 4. Aggregates pitch-level Statcast data into appearance-level statistics.
 5. Creates rolling performance and workload features.
 6. Labels appearances that occurred within **60 days** before an elbow/UCL injury.
-7. Balances the training data through undersampling and SMOTE oversampling.
-8. Trains and evaluates three machine learning models.
+7. Balances the training data through undersampling and SMOTE oversampling for machine learning models, and uses scaled rolling sequences and class weighting for deep learning models.
+8. Trains and evaluates three machine learning models (Logistic Regression, Random Forest, and XGBoost) and two deep learning models (1D-CNN and GRU).
 
 ---
 
