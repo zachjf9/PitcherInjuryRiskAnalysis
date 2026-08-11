@@ -80,6 +80,31 @@ python3 MachineLearningModels.py
 
 ---
 
+# 5. Generate Features and Run the Deep Learning Models
+
+Generate features for Deep Learning Models:
+
+```bash
+python generate_features.py
+python3 generate_features.py
+```
+
+For 1D-CNN Run:
+
+```bash
+python train_1dcnn.py
+python3 train_1dcnn.py
+```
+
+For GRU run:
+
+```bash
+python train_gru.py
+python3 train_gru.py
+```
+
+---
+
 # Data Processing Pipeline
 
 The pipeline performs the following steps:
